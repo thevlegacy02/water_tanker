@@ -3,8 +3,13 @@ import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:intl/intl.dart';
 import 'package:signature/signature.dart';
+import 'dart:convert';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
+import 'package:google_generative_ai/google_generative_ai.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await dotenv.load(fileName: ".env");
   runApp(const MyApp());
 }
 
@@ -60,6 +65,8 @@ class _DataLoggingScreenState extends State<DataLoggingScreen> {
     exportBackgroundColor: Colors.white,
   );
 
+  bool _isAnalyzing = false;
+
   @override
   void initState() {
     super.initState();
@@ -86,6 +93,75 @@ class _DataLoggingScreenState extends State<DataLoggingScreen> {
         if (type == 'side') _sidePic = image;
         if (type == 'back') _backPic = image;
         if (type == 'top') _topPic = image;
+      });
+
+      // Analyze the image to extract data if it's back or side pic
+      if (type == 'back' || type == 'side') {
+        _extractInfoFromImage(image);
+      }
+    }
+  }
+
+  Future<void> _extractInfoFromImage(XFile image) async {
+    final apiKey = dotenv.env['GEMINI_API_KEY'];
+    if (apiKey == null || apiKey.isEmpty || apiKey == 'YOUR_GEMINI_API_KEY_HERE') {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Gemini API Key is missing or invalid.')),
+      );
+      return;
+    }
+
+    setState(() {
+      _isAnalyzing = true;
+    });
+
+    try {
+      final model = GenerativeModel(
+        model: 'gemini-1.5-flash',
+        apiKey: apiKey,
+      );
+
+      final imageBytes = await image.readAsBytes();
+      final prompt = TextPart(
+          'Extract the vehicle registration number and vendor/company name from this image if visible. '
+          'Return ONLY a raw JSON object with keys "vehicleNumber" and "vendorName". '
+          'Do not include markdown blocks like ```json.');
+      final imagePart = DataPart('image/jpeg', imageBytes);
+
+      final response = await model.generateContent([
+        Content.multi([prompt, imagePart])
+      ]);
+
+      if (response.text != null) {
+        try {
+          final jsonStr = response.text!.trim().replaceAll('```json', '').replaceAll('```', '');
+          final Map<String, dynamic> data = jsonDecode(jsonStr);
+
+          setState(() {
+            if (data.containsKey('vehicleNumber') && data['vehicleNumber'] != null) {
+              _vehicleNumberController.text = data['vehicleNumber'].toString();
+            }
+            if (data.containsKey('vendorName') && data['vendorName'] != null) {
+              _vendorNameController.text = data['vendorName'].toString();
+            }
+          });
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Image analyzed successfully!')),
+          );
+        } catch (e) {
+          debugPrint('Failed to parse JSON: $e');
+        }
+      }
+    } catch (e) {
+      debugPrint('Error analyzing image: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to analyze image.')),
+      );
+    } finally {
+      setState(() {
+        _isAnalyzing = false;
       });
     }
   }
@@ -236,7 +312,23 @@ class _DataLoggingScreenState extends State<DataLoggingScreen> {
                 _buildPhotoPicker('Top Pic', _topPic, 'top'),
               ],
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 10),
+            
+            if (_isAnalyzing)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(8.0),
+                  child: Column(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 8),
+                      Text('Analyzing image...'),
+                    ],
+                  ),
+                ),
+              ),
+
+            const SizedBox(height: 10),
 
             // Form Fields
             Row(
@@ -278,7 +370,7 @@ class _DataLoggingScreenState extends State<DataLoggingScreen> {
             
             DropdownButtonFormField<String>(
               decoration: const InputDecoration(labelText: 'Capacity'),
-              value: _selectedCapacity,
+              initialValue: _selectedCapacity,
               items: _capacities.map((String value) {
                 return DropdownMenuItem<String>(
                   value: value,
@@ -296,7 +388,7 @@ class _DataLoggingScreenState extends State<DataLoggingScreen> {
             
             DropdownButtonFormField<String>(
               decoration: const InputDecoration(labelText: 'Security Guard Name (Optional)'),
-              value: _selectedGuard,
+              initialValue: _selectedGuard,
               items: _guards.map((String value) {
                 return DropdownMenuItem<String>(
                   value: value,
